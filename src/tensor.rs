@@ -1,16 +1,16 @@
+use std::cmp::Ordering;
 use std::ops;
-use rand::thread_rng;
+
 use rand::distributions::Uniform;
+use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
 
 use crate::errors::TensorError;
-
 
 pub struct Tensor {
     pub data: Vec<f64>,
     pub shape: Vec<usize>,
 }
-
 
 pub enum TensorOperations {
     Add,
@@ -19,6 +19,14 @@ pub enum TensorOperations {
     Div,
 }
 
+pub enum TensorAggregations {
+    Sum,
+    Mean,
+    Max,
+    Min,
+    ArgMax,
+    ArgMin,
+}
 
 impl Tensor {
     fn len_from_shape(shape: &[usize]) -> usize {
@@ -43,16 +51,67 @@ impl Tensor {
         strides
     }
 
+    fn parse_slice_idxs(&self, slice_idxs: &[[isize; 2]]) -> Result<Vec<[usize; 2]>, TensorError> {
+        if slice_idxs.is_empty() || slice_idxs.len() > 4 {
+            return Err(TensorError::IndexError);
+        };
+
+        let mut idxs = slice_idxs.to_vec().clone();
+
+        if self.shape.len() > slice_idxs.len() {
+            for _ in 0..(self.shape.len() - slice_idxs.len()) {
+                idxs.push([0, -1]);
+            }
+        }
+
+        let mut idxs_usize: Vec<[usize; 2]> = Vec::with_capacity(idxs.len());
+
+        for (i, idx) in idxs.iter().enumerate() {
+            let from = idx[0] as usize;
+            let to = if idx[1] == -1 {
+                self.shape[i] as usize
+            } else {
+                idx[1] as usize
+            };
+            if from >= to || to > self.shape[i] {
+                return Err(TensorError::IndexError);
+            }
+            idxs_usize.push([from, to]);
+        }
+
+        Ok(idxs_usize)
+    }
+
+    fn shape_from_slice(slice_idxs: &[[usize; 2]]) -> Vec<usize> {
+        let mut shape = Vec::with_capacity(slice_idxs.len());
+
+        for idx in slice_idxs.iter() {
+            if idx[1] - idx[0] > 1 {
+                shape.push(idx[1] - idx[0]);
+            }
+        }
+
+        if shape.is_empty() {
+            shape.push(1)
+        }
+
+        shape
+    }
+
     fn physical_idx(&self, logical_idxs: &[usize], strides: &[usize]) -> usize {
-        logical_idxs.iter().zip(strides).map(|(&idx, stride)| idx * stride).sum()
+        logical_idxs
+            .iter()
+            .zip(strides)
+            .map(|(&idx, stride)| idx * stride)
+            .sum()
     }
 
     pub fn new(data: Vec<f64>, shape: &[usize]) -> Result<Self, TensorError> {
-        if data.len() == Tensor::len_from_shape(shape)
-            && !shape.is_empty()
-            && shape.len() <= 4
-        {
-            Ok(Tensor { data, shape: shape.to_vec() })
+        if data.len() == Tensor::len_from_shape(shape) && !shape.is_empty() && shape.len() <= 4 {
+            Ok(Tensor {
+                data,
+                shape: shape.to_vec(),
+            })
         } else {
             Err(TensorError::InvalidShapeError)
         }
@@ -61,7 +120,10 @@ impl Tensor {
     pub fn zeroes(shape: &[usize]) -> Result<Self, TensorError> {
         if !shape.is_empty() && shape.len() <= 4 {
             let data = vec![0.0; Tensor::len_from_shape(shape)];
-            Ok(Tensor { data: data, shape: shape.to_vec() })
+            Ok(Tensor {
+                data: data,
+                shape: shape.to_vec(),
+            })
         } else {
             Err(TensorError::InvalidShapeError)
         }
@@ -70,7 +132,10 @@ impl Tensor {
     pub fn ones(shape: &[usize]) -> Result<Self, TensorError> {
         if !shape.is_empty() && shape.len() <= 4 {
             let data = vec![1.0; Tensor::len_from_shape(shape)];
-            Ok(Tensor { data, shape: shape.to_vec() })
+            Ok(Tensor {
+                data,
+                shape: shape.to_vec(),
+            })
         } else {
             Err(TensorError::InvalidShapeError)
         }
@@ -96,7 +161,7 @@ impl Tensor {
         &self.data[self.physical_idx(logical_idxs, strides)]
     }
 
-    pub fn view(&self, shape: &[isize]) -> Result<Self, TensorError> {
+    pub fn reshape(&self, shape: &[isize]) -> Result<Self, TensorError> {
         let num_of_neg = shape.iter().filter(|x| **x == -1).count();
         match num_of_neg {
             0 => {
@@ -124,14 +189,13 @@ impl Tensor {
                 }
                 Tensor::new(self.data.clone(), &new_shape)
             }
-            _ => {
-                Err(TensorError::InvalidShapeError)
-            }
+            _ => Err(TensorError::InvalidShapeError),
         }
     }
 
     fn broadcast(
-        letf_shape: &Vec<usize>, right_shape: &Vec<usize>
+        letf_shape: &Vec<usize>,
+        right_shape: &Vec<usize>,
     ) -> Result<(Vec<usize>, Vec<usize>, Vec<usize>), TensorError> {
         let mut left_shape = letf_shape.clone();
         let mut right_shape = right_shape.clone();
@@ -159,12 +223,16 @@ impl Tensor {
             } else {
                 return Err(TensorError::BroadcastError);
             }
-        };
+        }
 
         Ok((new_shape, left_strides, right_strides))
     }
 
-    fn element_operation(left: &f64, right: &f64, operation: &TensorOperations) -> Result<f64, TensorError> {
+    fn element_operation(
+        left: &f64,
+        right: &f64,
+        operation: &TensorOperations,
+    ) -> Result<f64, TensorError> {
         match operation {
             TensorOperations::Add => Ok(left + right),
             TensorOperations::Sub => Ok(left - right),
@@ -173,7 +241,11 @@ impl Tensor {
         }
     }
 
-    fn tensor_operation(&self, other: &Tensor, operation: TensorOperations) -> Result<Tensor, TensorError> {
+    fn tensor_operation(
+        &self,
+        other: &Tensor,
+        operation: TensorOperations,
+    ) -> Result<Tensor, TensorError> {
         let (new_shape, l_strides, r_strides) = Tensor::broadcast(&self.shape, &other.shape)?;
 
         let mut new_data: Vec<f64> = Vec::with_capacity(Tensor::len_from_shape(&new_shape));
@@ -184,7 +256,7 @@ impl Tensor {
                     let res = Tensor::element_operation(
                         self.get(&[i], &l_strides),
                         other.get(&[i], &r_strides),
-                        &operation
+                        &operation,
                     )?;
                     new_data.push(res);
                 }
@@ -196,7 +268,7 @@ impl Tensor {
                         let res = Tensor::element_operation(
                             self.get(&[i, j], &l_strides),
                             other.get(&[i, j], &r_strides),
-                            &operation
+                            &operation,
                         )?;
                         new_data.push(res);
                     }
@@ -210,7 +282,7 @@ impl Tensor {
                             let res = Tensor::element_operation(
                                 self.get(&[i, j, k], &l_strides),
                                 other.get(&[i, j, k], &r_strides),
-                                &operation
+                                &operation,
                             )?;
                             new_data.push(res);
                         }
@@ -226,7 +298,7 @@ impl Tensor {
                                 let res = Tensor::element_operation(
                                     self.get(&[i, j, k, l], &l_strides),
                                     other.get(&[i, j, k, l], &r_strides),
-                                    &operation
+                                    &operation,
                                 )?;
                                 new_data.push(res);
                             }
@@ -235,11 +307,15 @@ impl Tensor {
                 }
                 Tensor::new(new_data, &new_shape)
             }
-            _ => Err(TensorError::OperationError)
+            _ => Err(TensorError::OperationError),
         }
     }
 
-    fn scalar_operation(&self, scalar: f64, operation: TensorOperations) -> Result<Tensor, TensorError> {
+    fn scalar_operation(
+        &self,
+        scalar: f64,
+        operation: TensorOperations,
+    ) -> Result<Tensor, TensorError> {
         let mut new_data: Vec<f64> = Vec::with_capacity(Tensor::len_from_shape(&self.shape));
 
         let strides = Tensor::strides_from_shape(&self.shape);
@@ -247,11 +323,8 @@ impl Tensor {
         match self.shape.len() {
             1 => {
                 for i in 0..self.shape[0] {
-                    let res = Tensor::element_operation(
-                        self.get(&[i], &strides),
-                        &scalar,
-                        &operation
-                    )?;
+                    let res =
+                        Tensor::element_operation(self.get(&[i], &strides), &scalar, &operation)?;
                     new_data.push(res);
                 }
                 Tensor::new(new_data, &self.shape)
@@ -262,7 +335,7 @@ impl Tensor {
                         let res = Tensor::element_operation(
                             self.get(&[i, j], &strides),
                             &scalar,
-                            &operation
+                            &operation,
                         )?;
                         new_data.push(res);
                     }
@@ -276,7 +349,7 @@ impl Tensor {
                             let res = Tensor::element_operation(
                                 self.get(&[i, j, k], &strides),
                                 &scalar,
-                                &operation
+                                &operation,
                             )?;
                             new_data.push(res);
                         }
@@ -292,7 +365,7 @@ impl Tensor {
                                 let res = Tensor::element_operation(
                                     self.get(&[i, j, k, l], &strides),
                                     &scalar,
-                                    &operation
+                                    &operation,
                                 )?;
                                 new_data.push(res);
                             }
@@ -301,70 +374,306 @@ impl Tensor {
                 }
                 Tensor::new(new_data, &self.shape)
             }
-            _ => Err(TensorError::OperationError)
+            _ => Err(TensorError::OperationError),
         }
+    }
+
+    pub fn slice(&self, idxs: &[[isize; 2]]) -> Result<Self, TensorError> {
+        let idxs = self.parse_slice_idxs(idxs)?;
+
+        let new_shape = Tensor::shape_from_slice(&idxs);
+        let mut new_data = Vec::with_capacity(Tensor::len_from_shape(&new_shape));
+
+        let strides = Tensor::strides_from_shape(&self.shape);
+
+        match idxs.len() {
+            1 => {
+                for i in idxs[0][0]..idxs[0][1] {
+                    new_data.push(*self.get(&[i], &strides));
+                }
+                Tensor::new(new_data, &new_shape)
+            }
+            2 => {
+                for i in idxs[0][0]..idxs[0][1] {
+                    for j in idxs[1][0]..idxs[1][1] {
+                        new_data.push(*self.get(&[i, j], &strides));
+                    }
+                }
+                Tensor::new(new_data, &new_shape)
+            }
+            3 => {
+                for i in idxs[0][0]..idxs[0][1] {
+                    for j in idxs[1][0]..idxs[1][1] {
+                        for k in idxs[2][0]..idxs[2][1] {
+                            new_data.push(*self.get(&[i, j, k], &strides));
+                        }
+                    }
+                }
+                Tensor::new(new_data, &new_shape)
+            }
+            4 => {
+                for i in idxs[0][0]..idxs[0][1] {
+                    for j in idxs[1][0]..idxs[1][1] {
+                        for k in idxs[2][0]..idxs[2][1] {
+                            for l in idxs[3][0]..idxs[3][1] {
+                                new_data.push(*self.get(&[i, j, k, l], &strides));
+                            }
+                        }
+                    }
+                }
+                Tensor::new(new_data, &new_shape)
+            }
+            _ => Err(TensorError::IndexError),
+        }
+    }
+
+    fn aggregation_operation(
+        t: &Tensor,
+        operation: &TensorAggregations,
+    ) -> Result<f64, TensorError> {
+        match operation {
+            TensorAggregations::Sum => Ok(t.data.iter().sum()),
+            TensorAggregations::Mean => Ok(t.data.iter().sum::<f64>() / t.data.len() as f64),
+            TensorAggregations::Max => Ok(t.data.iter().cloned().fold(0. / 0., f64::max)),
+            TensorAggregations::Min => Ok(t.data.iter().cloned().fold(0. / 0., f64::min)),
+            TensorAggregations::ArgMax => {
+                let max_arg = t
+                    .data
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                    .map(|(i, _)| i);
+                match max_arg {
+                    Some(val) => Ok(val as f64),
+                    None => Err(TensorError::OperationError),
+                }
+            }
+            TensorAggregations::ArgMin => {
+                let min_arg = t
+                    .data
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+                    .map(|(i, _)| i);
+                match min_arg {
+                    Some(val) => Ok(val as f64),
+                    None => Err(TensorError::OperationError),
+                }
+            }
+        }
+    }
+
+    fn process_dims(
+        idxs: &mut Vec<[isize; 2]>,
+        dim: usize,
+        current_dim: usize,
+        current_idx: usize,
+    ) {
+        if dim == current_dim {
+            idxs[current_dim] = [0, -1];
+        } else {
+            idxs[current_dim] = [current_idx as isize, current_idx as isize + 1];
+        }
+    }
+
+    fn aggregation(
+        &self,
+        dimension: isize,
+        aggregation: TensorAggregations,
+    ) -> Result<Tensor, TensorError> {
+        if self.shape.is_empty() || (self.shape.len() > 4) {
+            return Err(TensorError::InvalidShapeError);
+        }
+
+        let dim = if dimension == -1 {
+            self.shape.len() - 1
+        } else if (dimension >= 0) && (dimension < self.shape.len() as isize) {
+            dimension as usize
+        } else {
+            return Err(TensorError::DimensionError);
+        };
+
+        let mut new_shape = Vec::new();
+        for i in 0..self.shape.len() {
+            if i != dim {
+                new_shape.push(self.shape[i]);
+            }
+        }
+        if new_shape.is_empty() {
+            new_shape.push(1);
+        }
+
+        let mut new_data = Vec::with_capacity(Tensor::len_from_shape(&new_shape));
+
+        let mut idxs: Vec<[isize; 2]> = vec![[0, 0]; self.shape.len()];
+
+        let bound_0 = if dim == 0 { 1 } else { self.shape[0] };
+        for i in 0..bound_0 {
+            Tensor::process_dims(&mut idxs, dim, 0, i);
+
+            if self.shape.len() == 1 {
+                new_data.push(Tensor::aggregation_operation(
+                    &self.slice(&idxs)?,
+                    &aggregation,
+                )?);
+            } else {
+                let bound_1 = if dim == 1 { 1 } else { self.shape[1] };
+                for j in 0..bound_1 {
+                    Tensor::process_dims(&mut idxs, dim, 1, j);
+
+                    if self.shape.len() == 2 {
+                        new_data.push(Tensor::aggregation_operation(
+                            &self.slice(&idxs)?,
+                            &aggregation,
+                        )?);
+                    } else {
+                        let bound_2 = if dim == 2 { 1 } else { self.shape[2] };
+                        for k in 0..bound_2 {
+                            Tensor::process_dims(&mut idxs, dim, 2, k);
+
+                            if self.shape.len() == 3 {
+                                new_data.push(Tensor::aggregation_operation(
+                                    &self.slice(&idxs)?,
+                                    &aggregation,
+                                )?);
+                            } else {
+                                let bound_3 = if dim == 3 { 1 } else { self.shape[3] };
+                                for l in 0..bound_3 {
+                                    Tensor::process_dims(&mut idxs, dim, 3, l);
+
+                                    new_data.push(Tensor::aggregation_operation(
+                                        &self.slice(&idxs)?,
+                                        &aggregation,
+                                    )?);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Tensor::new(new_data, &new_shape)
     }
 
     pub fn pow(&self, n: f64) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.powf(n)).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn sqrt(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.sqrt()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn exp(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.exp()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn ln(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.ln()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn log(&self, base: f64) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.log(base)).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn log2(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.log2()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn log10(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.log10()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn abs(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.abs()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn sin(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.sin()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn cos(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.cos()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn tan(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.tan()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
     pub fn tanh(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.tanh()).collect();
-        Tensor { data, shape: self.shape.clone() }
+        Tensor {
+            data,
+            shape: self.shape.clone(),
+        }
     }
 
+    pub fn sum(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::Sum)
+    }
+
+    pub fn mean(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::Mean)
+    }
+
+    pub fn max(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::Max)
+    }
+
+    pub fn min(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::Min)
+    }
+
+    pub fn argmax(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::ArgMax)
+    }
+
+    pub fn argmin(&self, dim: isize) -> Result<Tensor, TensorError> {
+        self.aggregation(dim, TensorAggregations::ArgMin)
+    }
 }
 
 impl ops::Add<&Tensor> for &Tensor {
@@ -497,7 +806,7 @@ mod test {
     #[test]
     fn test_pow() {
         let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0, 1.0, 2.0, 3.0, 4.0];
-        let t = Tensor::new(data.clone(),&[3, 4]).unwrap();
+        let t = Tensor::new(data.clone(), &[3, 4]).unwrap();
         assert_eq!(
             t.pow(2.0).data,
             vec![1.0, 4.0, 9.0, 16.0, 1.0, 4.0, 9.0, 16.0, 1.0, 4.0, 9.0, 16.0]
@@ -517,8 +826,14 @@ mod test {
         for i in 0..2 {
             for j in 0..2 {
                 for k in 0..3 {
-                    assert_eq!(id, t.physical_idx(&[i, j, k], &Tensor::strides_from_shape(&t.shape)));
-                    assert_eq!(id as f64, t.data[t.physical_idx(&[i, j, k], &Tensor::strides_from_shape(&t.shape))]);
+                    assert_eq!(
+                        id,
+                        t.physical_idx(&[i, j, k], &Tensor::strides_from_shape(&t.shape))
+                    );
+                    assert_eq!(
+                        id as f64,
+                        t.data[t.physical_idx(&[i, j, k], &Tensor::strides_from_shape(&t.shape))]
+                    );
                     id += 1;
                 }
             }
@@ -530,14 +845,14 @@ mod test {
     fn test_view_wrong_shape() {
         let data: Vec<f64> = vec![1.0; 27];
         let t = Tensor::new(data, &[3, 3, 3]).unwrap();
-        let _v = t.view(&[4, 5, 2]).unwrap();
+        let _v = t.reshape(&[4, 5, 2]).unwrap();
     }
 
     #[test]
     fn test_view() {
         let data: Vec<f64> = vec![1.0; 27];
         let t = Tensor::new(data, &[3, 3, 3]).unwrap();
-        let v = t.view(&[1, 3, -1]).unwrap();
+        let v = t.reshape(&[1, 3, -1]).unwrap();
         assert_eq!(t.data, v.data);
         assert_eq!(t.len(), v.len());
         assert_eq!(v.shape, [1, 3, 9]);
@@ -547,23 +862,24 @@ mod test {
     fn test_broadcast() {
         let t1 = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]).unwrap();
         let t2 = Tensor::new(vec![2.0, 3.0], &[2]).unwrap();
-        let (new_shape, _left_strides, _right_strides) = Tensor::broadcast(&t1.shape, &t2.shape).unwrap();
+        let (new_shape, _left_strides, _right_strides) =
+            Tensor::broadcast(&t1.shape, &t2.shape).unwrap();
         assert_eq!(new_shape, vec![2, 2]);
 
         let t1 = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], &[1, 2, 2]).unwrap();
         let t2 = Tensor::new(vec![2.0, 3.0], &[2]).unwrap();
-        let (new_shape, _left_strides, _right_strides) = Tensor::broadcast(&t1.shape, &t2.shape).unwrap();
+        let (new_shape, _left_strides, _right_strides) =
+            Tensor::broadcast(&t1.shape, &t2.shape).unwrap();
         assert_eq!(new_shape, vec![1, 2, 2]);
-
     }
     #[test]
     fn test_view_neg() {
         let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
 
-        let _x = t.view(&[-1]).unwrap();
-        let _x = t.view(&[2, -1]).unwrap();
-        let _x = t.view(&[1, -1]).unwrap();
-        let _x = t.view(&[4, -1]).unwrap();
+        let _x = t.reshape(&[-1]).unwrap();
+        let _x = t.reshape(&[2, -1]).unwrap();
+        let _x = t.reshape(&[1, -1]).unwrap();
+        let _x = t.reshape(&[4, -1]).unwrap();
     }
 
     #[test]
@@ -571,7 +887,7 @@ mod test {
     fn test_view_wrong_neg() {
         let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
 
-        let _x = t.view(&[-1, -1]).unwrap();
+        let _x = t.reshape(&[-1, -1]).unwrap();
     }
 
     #[test]
@@ -679,5 +995,394 @@ mod test {
         let a = Tensor::new(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]).unwrap();
         let b = &a / 2.0;
         assert_eq!(b.data, vec![1.0, 1.5, 2.0, 2.5]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_slice_too_large_slice() {
+        let t = Tensor::zeroes(&[2, 2]).unwrap();
+        let _x = t.slice(&[[0, 1], [0, 1], [0, 1]]).unwrap();
+    }
+
+    #[test]
+    fn test_slice_negative_1() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+
+        let x = t.slice(&[[0, -1], [0, 1]]).unwrap();
+
+        assert!((x.data == vec![1.0, 3.0]) && (*x.shape == [2]));
+    }
+
+    #[test]
+    fn test_slice_fewer_dims() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1]]).unwrap();
+
+        assert!((x.data == vec![1.0, 2.0]) && (x.shape == vec![2]));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_slice_start_greater_than_stop() {
+        let t = Tensor::zeroes(&[2, 2]).unwrap();
+        let _x = t.slice(&[[0, 1], [1, 0]]).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_slice_stop_greater_than_shape() {
+        let t = Tensor::zeroes(&[2, 2]).unwrap();
+        let _x = t.slice(&[[0, 1], [0, 3]]).unwrap();
+    }
+
+    #[test]
+    fn test_slice_tensor_1d_element() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[4]).unwrap();
+
+        let x = t.slice(&[[0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0])
+                && (x.shape == vec![1])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+    #[test]
+    fn test_slice_tensor_2d_element() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0])
+                && (x.shape == vec![1])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_2d_row() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 2]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 2.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_2d_col() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 2], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 3.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_3d_element() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0])
+                && (x.shape == vec![1])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_3d_row() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1], [0, 2]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 2.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_3d_col() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 2], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 3.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_3d_channel() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 2], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 5.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_3d_chunk() {
+        let t = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[2, 2, 2]).unwrap();
+
+        let x = t.slice(&[[0, 2], [0, 2], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 3.0, 5.0, 7.0])
+                && (*x.shape == [2, 2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![2, 1])
+        )
+    }
+    #[test]
+    fn test_slice_tensor_4d_element() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0])
+                && (x.shape == vec![1])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_4d_row() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1], [0, 1], [0, 2]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 2.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_4d_col() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 1], [0, 2], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 3.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_4d_channel() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 1], [0, 2], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 5.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_4d_batch() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 2], [0, 1], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 9.0])
+                && (x.shape == vec![2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![1])
+        )
+    }
+
+    #[test]
+    fn test_slice_tensor_4d_chunk() {
+        let t = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let x = t.slice(&[[0, 2], [0, 2], [0, 1], [0, 1]]).unwrap();
+
+        assert!(
+            (x.data == vec![1.0, 5.0, 9.0, 13.0])
+                && (*x.shape == [2, 2])
+                && (Tensor::strides_from_shape(&x.shape) == vec![2, 1])
+        )
+    }
+
+    #[test]
+    fn test_sum_1d() {
+        let x = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[16],
+        )
+        .unwrap();
+
+        let y = x.sum(0).unwrap();
+
+        assert!((y.data == vec![136.0]) && (y.shape == vec![1]))
+    }
+
+    #[test]
+    fn test_sum_2d() {
+        let x = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 8],
+        )
+        .unwrap();
+
+        let y = x.sum(1).unwrap();
+
+        assert!((y.data == vec![36.0, 100.0]) && (y.shape == vec![2]))
+    }
+
+    #[test]
+    fn test_sum_3d() {
+        let x = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 4],
+        )
+        .unwrap();
+
+        let y = x.sum(1).unwrap();
+
+        assert!(
+            (y.data == vec![6.0, 8.0, 10.0, 12.0, 22.0, 24.0, 26.0, 28.0])
+                && (y.shape == vec![2, 4])
+        )
+    }
+
+    #[test]
+    fn test_sum_4d() {
+        let x = Tensor::new(
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+            &[2, 2, 2, 2],
+        )
+        .unwrap();
+
+        let y = x.sum(-1).unwrap();
+
+        assert!(
+            (y.data == vec![3.0, 7.0, 11.0, 15.0, 19.0, 23.0, 27.0, 31.0])
+                && (y.shape == vec![2, 2, 2])
+        )
+    }
+
+    #[test]
+    fn test_mean() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+
+        let y = x.mean(-1).unwrap();
+
+        assert!((y.data == vec![2.0, 5.0]) && (y.shape == vec![2]))
+    }
+
+    #[test]
+    fn test_max() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+
+        let y = x.max(-1).unwrap();
+
+        assert!((y.data == vec![3.0, 6.0]) && (y.shape == vec![2]))
+    }
+
+    #[test]
+    fn test_min() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+
+        let y = x.min(-1).unwrap();
+
+        assert!((y.data == vec![1.0, 4.0]) && (y.shape == vec![2]))
+    }
+
+    #[test]
+    fn test_argmax() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+
+        let y = x.argmax(-1).unwrap();
+
+        assert!((y.data == vec![2.0, 2.0]) && (y.shape == vec![2]))
+    }
+
+    #[test]
+    fn test_argmin() {
+        let x = Tensor::new(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]).unwrap();
+
+        let y = x.argmin(-1).unwrap();
+
+        assert!((y.data == vec![0.0, 0.0]) && (y.shape == vec![2]))
     }
 }

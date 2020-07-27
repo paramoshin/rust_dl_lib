@@ -1,9 +1,9 @@
 # rust_dl_lib
 
-Deep learning library in Rust programming language implemented from scratch for educational purposes.  
-  
+Deep learning library in Rust programming language implemented from scratch for educational purposes.
+
 ## Plan:
-1. Tensor  
+1. Tensor
    Tensor operations:
     * Add +
     * Sub +
@@ -20,17 +20,16 @@ Deep learning library in Rust programming language implemented from scratch for 
     * abs +
     * matmul -
 
-    Aggregations: -
-    * sum
-    * mean
-    * max
-    * min
-    * argmax
-    * argmin
-2. Loss functions  
+    Aggregations:
+    * sum +
+    * mean +
+    * max +
+    * min +
+    * argmax +
+    * argmin +
+2. Loss functions
     * cross-entropy
     * MSE
 3. Optimizers
 4. Layers
 5. Simple example
- 
