@@ -18,7 +18,7 @@ Deep learning library in Rust programming language implemented from scratch for 
     * pow +
     * sqrt +
     * abs +
-    * matmul -
+    * matmul +
 
     Aggregations:
     * sum +
