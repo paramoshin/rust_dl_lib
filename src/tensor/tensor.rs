@@ -6,21 +6,28 @@ use rand::thread_rng;
 use rand_distr::{Distribution, Normal};
 
 use crate::tensor::errors::TensorError;
+use std::intrinsics::maxnumf32;
 
-pub struct Tensor {
+pub struct Tensor<'a> {
     pub data: Vec<f64>,
     pub shape: Vec<usize>,
     pub strides: Vec<usize>,
+
+    requires_grad: bool,
+
+    grad: Vec<f64>,
+    parents: Option<&'a[&'a Tensor<'a>]>,
+    operation: Option<Operation>,
 }
 
-pub enum TensorOperations {
+pub enum TensorOperation {
     Add,
     Sub,
     Mul,
     Div,
 }
 
-pub enum TensorAggregations {
+pub enum TensorAggregation {
     Sum,
     Mean,
     Max,
@@ -29,7 +36,27 @@ pub enum TensorAggregations {
     ArgMin,
 }
 
-impl Tensor {
+pub enum Operation {
+    TensorOperation(TensorOperation),
+    TensorAggregation(TensorAggregation),
+    Pow(exp),
+    Sqrt,
+    Exp,
+    Ln,
+    Log(base),
+    Log2,
+    Log10,
+    Abs,
+    Sin,
+    Cos,
+    Tan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Matmul,
+}
+
+impl<'a> Tensor<'a> {
     fn len_from_shape(shape: &[usize]) -> usize {
         let mut len = 1;
         for l in shape {
@@ -113,6 +140,30 @@ impl Tensor {
                 data,
                 shape: shape.to_vec(),
                 strides: Tensor::strides_from_shape(&shape),
+
+                requires_grad: true,
+                grad: vec![0.0; Tensor::len_from_shape(&shape)],
+                parents: None,
+                operation: None,
+            })
+        } else {
+            Err(TensorError::InvalidShapeError)
+        }
+    }
+
+    pub fn new_with_parents<'b>(
+        data: Vec<f64>, shape: &[usize], parents: Option<&'a [&'a Tensor<'a>]>, operation: Operation
+    ) -> Result<Self, TensorError> {
+        if data.len() == Tensor::len_from_shape(shape) && !shape.is_empty() && shape.len() <= 4 {
+            Ok(Tensor {
+                data,
+                shape: shape.to_vec(),
+                strides: Tensor::strides_from_shape(&shape),
+
+                requires_grad: true,
+                grad: vec![0.0; Tensor::len_from_shape(&shape)],
+                parents,
+                operation: Some(operation),
             })
         } else {
             Err(TensorError::InvalidShapeError)
@@ -229,20 +280,20 @@ impl Tensor {
     fn element_operation(
         left: &f64,
         right: &f64,
-        operation: &TensorOperations,
+        operation: &TensorOperation,
     ) -> Result<f64, TensorError> {
         match operation {
-            TensorOperations::Add => Ok(left + right),
-            TensorOperations::Sub => Ok(left - right),
-            TensorOperations::Mul => Ok(left * right),
-            TensorOperations::Div => Ok(left / right),
+            TensorOperation::Add => Ok(left + right),
+            TensorOperation::Sub => Ok(left - right),
+            TensorOperation::Mul => Ok(left * right),
+            TensorOperation::Div => Ok(left / right),
         }
     }
 
     fn tensor_operation(
         &self,
         other: &Tensor,
-        operation: TensorOperations,
+        operation: TensorOperation,
     ) -> Result<Tensor, TensorError> {
         let (new_shape, l_strides, r_strides) = Tensor::broadcast(&self.shape, &other.shape)?;
 
@@ -312,7 +363,7 @@ impl Tensor {
     fn scalar_operation(
         &self,
         scalar: f64,
-        operation: TensorOperations,
+        operation: TensorOperation,
     ) -> Result<Tensor, TensorError> {
         let mut new_data: Vec<f64> = Vec::with_capacity(Tensor::len_from_shape(&self.shape));
 
@@ -427,14 +478,14 @@ impl Tensor {
 
     fn aggregation_operation(
         t: &Tensor,
-        operation: &TensorAggregations,
+        operation: &TensorAggregation,
     ) -> Result<f64, TensorError> {
         match operation {
-            TensorAggregations::Sum => Ok(t.data.iter().sum()),
-            TensorAggregations::Mean => Ok(t.data.iter().sum::<f64>() / t.data.len() as f64),
-            TensorAggregations::Max => Ok(t.data.iter().cloned().fold(0. / 0., f64::max)),
-            TensorAggregations::Min => Ok(t.data.iter().cloned().fold(0. / 0., f64::min)),
-            TensorAggregations::ArgMax => {
+            TensorAggregation::Sum => Ok(t.data.iter().sum()),
+            TensorAggregation::Mean => Ok(t.data.iter().sum::<f64>() / t.data.len() as f64),
+            TensorAggregation::Max => Ok(t.data.iter().cloned().fold(0. / 0., f64::max)),
+            TensorAggregation::Min => Ok(t.data.iter().cloned().fold(0. / 0., f64::min)),
+            TensorAggregation::ArgMax => {
                 let max_arg = t
                     .data
                     .iter()
@@ -446,7 +497,7 @@ impl Tensor {
                     None => Err(TensorError::OperationError),
                 }
             }
-            TensorAggregations::ArgMin => {
+            TensorAggregation::ArgMin => {
                 let min_arg = t
                     .data
                     .iter()
@@ -477,7 +528,7 @@ impl Tensor {
     fn aggregation(
         &self,
         dimension: isize,
-        aggregation: TensorAggregations,
+        aggregation: TensorAggregation,
     ) -> Result<Tensor, TensorError> {
         if self.shape.is_empty() || (self.shape.len() > 4) {
             return Err(TensorError::InvalidShapeError);
@@ -619,6 +670,18 @@ impl Tensor {
         Tensor::new(data, &shape).unwrap()
     }
 
+    pub fn sinh(&self) -> Self {
+        let data: Vec<f64> = self.data.iter().map(|x| x.sinh()).collect();
+        let shape = self.shape.clone();
+        Tensor::new(data, &shape).unwrap()
+    }
+
+    pub fn cosh(&self) -> Self {
+        let data: Vec<f64> = self.data.iter().map(|x| x.cosh()).collect();
+        let shape = self.shape.clone();
+        Tensor::new(data, &shape).unwrap()
+    }
+
     pub fn tanh(&self) -> Self {
         let data: Vec<f64> = self.data.iter().map(|x| x.tanh()).collect();
         let shape = self.shape.clone();
@@ -681,112 +744,249 @@ impl Tensor {
     }
 
     pub fn sum(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::Sum)
+        self.aggregation(dim, TensorAggregation::Sum)
     }
 
     pub fn mean(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::Mean)
+        self.aggregation(dim, TensorAggregation::Mean)
     }
 
     pub fn max(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::Max)
+        self.aggregation(dim, TensorAggregation::Max)
     }
 
     pub fn min(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::Min)
+        self.aggregation(dim, TensorAggregation::Min)
     }
 
     pub fn argmax(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::ArgMax)
+        self.aggregation(dim, TensorAggregation::ArgMax)
     }
 
     pub fn argmin(&self, dim: isize) -> Result<Tensor, TensorError> {
-        self.aggregation(dim, TensorAggregations::ArgMin)
+        self.aggregation(dim, TensorAggregation::ArgMin)
+    }
+
+    fn grad(&self) {
+
+        let grads: [Vec<f64>; 2] = match self.operation {
+            Some(Operation::TensorOperation(TensorOperation::Add)) => {
+                [
+                    vec![1.0; Tensor::len_from_shape(&self.shape)],
+                    vec![1.0; Tensor::len_from_shape(&self.shape)]
+                ]
+            },
+            Some(Operation::TensorOperation(TensorOperation::Sub)) => {
+                [
+                    vec![1.0; Tensor::len_from_shape(&self.shape)],
+                    vec![1.0; Tensor::len_from_shape(&self.shape)]
+                ]
+            },
+            Some(Operation::TensorOperation(TensorOperation::Mul)) => {
+                [
+                    self.parents.unwrap()[1].data.clone(),
+                    self.parents.unwrap()[0].data.clone(),
+                ]
+            },
+            Some(Operation::TensorOperation(TensorOperation::Div)) => {
+                [
+                    self.parents.unwrap()[1].pow(-1.0).data.clone(),
+                    (&(self.parents.unwrap()[0] * &self.parents.unwrap()[1].pow(-2.0)) * -1.0)
+                        .data.clone(),
+                ]
+            },
+            Some(Operation::TensorAggregation(TensorAggregation::Sum)) => {},
+            Some(Operation::TensorAggregation(TensorAggregation::Mean)) => {},
+            Some(Operation::TensorAggregation(TensorAggregation::Max)) => {},
+            Some(Operation::TensorAggregation(TensorAggregation::Min)) => {},
+            Some(Operation::TensorAggregation(TensorAggregation::ArgMax)) => {},
+            Some(Operation::TensorAggregation(TensorAggregation::ArgMin)) => {},
+            Some(Operation::Abs) => {
+                [
+                    self.parents.unwrap()[0].data
+                        .iter()
+                        .map(
+                            |x| {
+                                if *x > 0.0 { 1.0 }
+                                else if *x < 0.0 { -1.0 }
+                                else { 0.0 }
+                            }
+                        ).collect(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Cos) => {
+                [
+                    (self.parents.unwrap()[0].sin() * -1.0).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Cosh) => {
+                [
+                    (self.parents.unwrap()[0].sinh() * -1.0).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Exp) => {
+                [
+                    self.parents.unwrap()[0].data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Ln) => {
+                [
+                    (1.0 / self.parents.unwrap()[0]).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Log(base)) => {
+                [
+                    (1.0 / (base as f64 * self.parents.unwrap()[0])).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Log2) => {
+                [
+                    (1.0 / (2.0 * self.parents.unwrap()[0])).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Log10) => {
+                [
+                    (1.0 / (10.0 * self.parents.unwrap()[0])).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Matmul) => {
+                [
+                    self.parents.unwrap()[1].transpose().data.clone(),
+                    self.parents.unwrap()[0].transpose().data.clone(),
+                ]
+            },
+            Some(Operation::Pow(exp)) => {
+                [
+                    (exp as f64 * self.parents.unwrap()[0]).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Sin) => {
+                [
+                    self.parents.unwrap()[0].cos().data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Sinh) => {
+                [
+                    self.parents.unwrap()[0].cosh().data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Sqrt) => {
+                [
+                    (self.parents.unwrap()[0].pow(-0.5) / 2.0).data.clone(),
+                    vec![0.0],
+                ]
+            },
+            Some(Operation::Tan) => {
+                [
+                    (1.0 / self.parents.unwrap()[0].cos().pow(2.0)).data.clone(),
+                    vec![0.0]
+                ]
+            },
+            Some(Operation::Tanh) => {
+                [
+                    (1.0 / self.parents.unwrap()[0].cosh().pow(2.0)).data.clone(),
+                    vec![0.0]
+                ]
+            },
+            _ => {}
+        };
+
     }
 }
 
-impl ops::Add<&Tensor> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Add for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn add(self, other: &Tensor) -> Tensor {
-        match self.tensor_operation(other, TensorOperations::Add) {
+    fn add(self, other: &'a Tensor) -> Tensor<'a> {
+        match self.tensor_operation(other, TensorOperation::Add) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Sub<&Tensor> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Sub for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn sub(self, other: &Tensor) -> Tensor {
-        match self.tensor_operation(other, TensorOperations::Sub) {
+    fn sub(self, other: &'a Tensor) -> Tensor<'a>  {
+        match self.tensor_operation(other, TensorOperation::Sub) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Mul<&Tensor> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Mul for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn mul(self, other: &Tensor) -> Tensor {
-        match self.tensor_operation(other, TensorOperations::Mul) {
+    fn mul(self, other: &'a Tensor) -> Tensor<'a> {
+        match self.tensor_operation(other, TensorOperation::Mul) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Div<&Tensor> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Div for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn div(self, other: &Tensor) -> Tensor {
-        match self.tensor_operation(other, TensorOperations::Div) {
+    fn div(self, other: &'a Tensor) -> Tensor<'a> {
+        match self.tensor_operation(other, TensorOperation::Div) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Add<f64> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Add<f64> for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn add(self, other: f64) -> Tensor {
-        match self.scalar_operation(other, TensorOperations::Add) {
+    fn add(self, other: f64) -> Tensor<'a> {
+        match self.scalar_operation(other, TensorOperation::Add) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Sub<f64> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Sub<f64> for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn sub(self, other: f64) -> Tensor {
-        match self.scalar_operation(other, TensorOperations::Sub) {
+    fn sub(self, other: f64) -> Tensor<'a> {
+        match self.scalar_operation(other, TensorOperation::Sub) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Mul<f64> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Mul<f64> for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn mul(self, other: f64) -> Tensor {
-        match self.scalar_operation(other, TensorOperations::Mul) {
+    fn mul(self, other: f64) -> Tensor<'a> {
+        match self.scalar_operation(other, TensorOperation::Mul) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }
     }
 }
 
-impl ops::Div<f64> for &Tensor {
-    type Output = Tensor;
+impl<'a> ops::Div<f64> for &'a Tensor<'a> {
+    type Output = Tensor<'a>;
 
-    fn div(self, other: f64) -> Tensor {
-        match self.scalar_operation(other, TensorOperations::Div) {
+    fn div(self, other: f64) -> Tensor<'a> {
+        match self.scalar_operation(other, TensorOperation::Div) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
         }

@@ -28,8 +28,8 @@ Deep learning library in Rust programming language implemented from scratch for 
     * argmax +
     * argmin +
 2. Loss functions
-    * cross-entropy
-    * MSE
+    * cross-entropy +
+    * MSE +
 3. Optimizers
 4. Layers
 5. Simple example
