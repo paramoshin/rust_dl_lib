@@ -1,5 +1,5 @@
-mod optimizers;
 mod loss;
+mod optimizers;
 mod tensor;
 
 fn main() {

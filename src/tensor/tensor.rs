@@ -16,7 +16,7 @@ pub struct Tensor<'a> {
     requires_grad: bool,
 
     grad: Vec<f64>,
-    parents: Option<&'a[&'a Tensor<'a>]>,
+    parents: Option<&'a [&'a Tensor<'a>]>,
     operation: Option<Operation>,
 }
 
@@ -152,7 +152,10 @@ impl<'a> Tensor<'a> {
     }
 
     pub fn new_with_parents<'b>(
-        data: Vec<f64>, shape: &[usize], parents: Option<&'a [&'a Tensor<'a>]>, operation: Operation
+        data: Vec<f64>,
+        shape: &[usize],
+        parents: Option<&'a [&'a Tensor<'a>]>,
+        operation: Operation,
     ) -> Result<Self, TensorError> {
         if data.len() == Tensor::len_from_shape(shape) && !shape.is_empty() && shape.len() <= 4 {
             Ok(Tensor {
@@ -768,140 +771,97 @@ impl<'a> Tensor<'a> {
     }
 
     fn grad(&self) {
-
         let grads: [Vec<f64>; 2] = match self.operation {
-            Some(Operation::TensorOperation(TensorOperation::Add)) => {
-                [
-                    vec![1.0; Tensor::len_from_shape(&self.shape)],
-                    vec![1.0; Tensor::len_from_shape(&self.shape)]
-                ]
-            },
-            Some(Operation::TensorOperation(TensorOperation::Sub)) => {
-                [
-                    vec![1.0; Tensor::len_from_shape(&self.shape)],
-                    vec![1.0; Tensor::len_from_shape(&self.shape)]
-                ]
-            },
-            Some(Operation::TensorOperation(TensorOperation::Mul)) => {
-                [
-                    self.parents.unwrap()[1].data.clone(),
-                    self.parents.unwrap()[0].data.clone(),
-                ]
-            },
-            Some(Operation::TensorOperation(TensorOperation::Div)) => {
-                [
-                    self.parents.unwrap()[1].pow(-1.0).data.clone(),
-                    (&(self.parents.unwrap()[0] * &self.parents.unwrap()[1].pow(-2.0)) * -1.0)
-                        .data.clone(),
-                ]
-            },
-            Some(Operation::TensorAggregation(TensorAggregation::Sum)) => {},
-            Some(Operation::TensorAggregation(TensorAggregation::Mean)) => {},
-            Some(Operation::TensorAggregation(TensorAggregation::Max)) => {},
-            Some(Operation::TensorAggregation(TensorAggregation::Min)) => {},
-            Some(Operation::TensorAggregation(TensorAggregation::ArgMax)) => {},
-            Some(Operation::TensorAggregation(TensorAggregation::ArgMin)) => {},
-            Some(Operation::Abs) => {
-                [
-                    self.parents.unwrap()[0].data
-                        .iter()
-                        .map(
-                            |x| {
-                                if *x > 0.0 { 1.0 }
-                                else if *x < 0.0 { -1.0 }
-                                else { 0.0 }
-                            }
-                        ).collect(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Cos) => {
-                [
-                    (self.parents.unwrap()[0].sin() * -1.0).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Cosh) => {
-                [
-                    (self.parents.unwrap()[0].sinh() * -1.0).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Exp) => {
-                [
-                    self.parents.unwrap()[0].data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Ln) => {
-                [
-                    (1.0 / self.parents.unwrap()[0]).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Log(base)) => {
-                [
-                    (1.0 / (base as f64 * self.parents.unwrap()[0])).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Log2) => {
-                [
-                    (1.0 / (2.0 * self.parents.unwrap()[0])).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Log10) => {
-                [
-                    (1.0 / (10.0 * self.parents.unwrap()[0])).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Matmul) => {
-                [
-                    self.parents.unwrap()[1].transpose().data.clone(),
-                    self.parents.unwrap()[0].transpose().data.clone(),
-                ]
-            },
-            Some(Operation::Pow(exp)) => {
-                [
-                    (exp as f64 * self.parents.unwrap()[0]).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Sin) => {
-                [
-                    self.parents.unwrap()[0].cos().data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Sinh) => {
-                [
-                    self.parents.unwrap()[0].cosh().data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Sqrt) => {
-                [
-                    (self.parents.unwrap()[0].pow(-0.5) / 2.0).data.clone(),
-                    vec![0.0],
-                ]
-            },
-            Some(Operation::Tan) => {
-                [
-                    (1.0 / self.parents.unwrap()[0].cos().pow(2.0)).data.clone(),
-                    vec![0.0]
-                ]
-            },
-            Some(Operation::Tanh) => {
-                [
-                    (1.0 / self.parents.unwrap()[0].cosh().pow(2.0)).data.clone(),
-                    vec![0.0]
-                ]
-            },
+            Some(Operation::TensorOperation(TensorOperation::Add)) => [
+                vec![1.0; Tensor::len_from_shape(&self.shape)],
+                vec![1.0; Tensor::len_from_shape(&self.shape)],
+            ],
+            Some(Operation::TensorOperation(TensorOperation::Sub)) => [
+                vec![1.0; Tensor::len_from_shape(&self.shape)],
+                vec![1.0; Tensor::len_from_shape(&self.shape)],
+            ],
+            Some(Operation::TensorOperation(TensorOperation::Mul)) => [
+                self.parents.unwrap()[1].data.clone(),
+                self.parents.unwrap()[0].data.clone(),
+            ],
+            Some(Operation::TensorOperation(TensorOperation::Div)) => [
+                self.parents.unwrap()[1].pow(-1.0).data.clone(),
+                (&(self.parents.unwrap()[0] * &self.parents.unwrap()[1].pow(-2.0)) * -1.0)
+                    .data
+                    .clone(),
+            ],
+            Some(Operation::TensorAggregation(TensorAggregation::Sum)) => {}
+            Some(Operation::TensorAggregation(TensorAggregation::Mean)) => {}
+            Some(Operation::TensorAggregation(TensorAggregation::Max)) => {}
+            Some(Operation::TensorAggregation(TensorAggregation::Min)) => {}
+            Some(Operation::TensorAggregation(TensorAggregation::ArgMax)) => {}
+            Some(Operation::TensorAggregation(TensorAggregation::ArgMin)) => {}
+            Some(Operation::Abs) => [
+                self.parents.unwrap()[0]
+                    .data
+                    .iter()
+                    .map(|x| {
+                        if *x > 0.0 {
+                            1.0
+                        } else if *x < 0.0 {
+                            -1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect(),
+                vec![0.0],
+            ],
+            Some(Operation::Cos) => [
+                (self.parents.unwrap()[0].sin() * -1.0).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Cosh) => [
+                (self.parents.unwrap()[0].sinh() * -1.0).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Exp) => [self.parents.unwrap()[0].data.clone(), vec![0.0]],
+            Some(Operation::Ln) => [(1.0 / self.parents.unwrap()[0]).data.clone(), vec![0.0]],
+            Some(Operation::Log(base)) => [
+                (1.0 / (base as f64 * self.parents.unwrap()[0]))
+                    .data
+                    .clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Log2) => [
+                (1.0 / (2.0 * self.parents.unwrap()[0])).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Log10) => [
+                (1.0 / (10.0 * self.parents.unwrap()[0])).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Matmul) => [
+                self.parents.unwrap()[1].transpose().data.clone(),
+                self.parents.unwrap()[0].transpose().data.clone(),
+            ],
+            Some(Operation::Pow(exp)) => [
+                (exp as f64 * self.parents.unwrap()[0]).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Sin) => [self.parents.unwrap()[0].cos().data.clone(), vec![0.0]],
+            Some(Operation::Sinh) => [self.parents.unwrap()[0].cosh().data.clone(), vec![0.0]],
+            Some(Operation::Sqrt) => [
+                (self.parents.unwrap()[0].pow(-0.5) / 2.0).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Tan) => [
+                (1.0 / self.parents.unwrap()[0].cos().pow(2.0)).data.clone(),
+                vec![0.0],
+            ],
+            Some(Operation::Tanh) => [
+                (1.0 / self.parents.unwrap()[0].cosh().pow(2.0))
+                    .data
+                    .clone(),
+                vec![0.0],
+            ],
             _ => {}
         };
-
     }
 }
 
@@ -919,7 +879,7 @@ impl<'a> ops::Add for &'a Tensor<'a> {
 impl<'a> ops::Sub for &'a Tensor<'a> {
     type Output = Tensor<'a>;
 
-    fn sub(self, other: &'a Tensor) -> Tensor<'a>  {
+    fn sub(self, other: &'a Tensor) -> Tensor<'a> {
         match self.tensor_operation(other, TensorOperation::Sub) {
             Ok(t) => t,
             Err(e) => panic!("{}", e),
